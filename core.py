@@ -82,6 +82,9 @@ def _ms_is_valid(msecs):
     """Return whether QTime would consider a ms since midnight valid."""
     return msecs >= 0 and msecs <= 86400000
 
+def num_elements(num):
+    return "1 element" if num == 1 else "%d elements" % num
+
 class ArrayIter:
     """Iterates over a fixed-size array."""
     def __init__(self, array, size):
@@ -550,8 +553,7 @@ class QMapPrinter:
             self.root = root
             self.current = None
             self.node_p_type = node_p_type
-            self.next_is_key = True
-            self.i = -1
+            self.count = 0
             # we store the path here to avoid keeping re-fetching
             # values from the inferior (also, skips the pointer
             # arithmetic involved in using the parent pointer)
@@ -587,16 +589,13 @@ class QMapPrinter:
             return True
 
         def __next__(self):
-            if self.next_is_key:
-                if not self.moveToNextNode():
-                    raise StopIteration
-                self.current_typed = self.current.reinterpret_cast(self.node_p_type)
-                self.next_is_key = False
-                self.i += 1
-                return ('key' + str(self.i), self.current_typed['key'])
-            else:
-                self.next_is_key = True
-                return ('value' + str(self.i), self.current_typed['value'])
+            if not self.moveToNextNode():
+                raise StopIteration
+            current_typed = self.current.cast(self.node_p_type)
+            self.current_typed = current_typed
+            result = (f'[{self.count}]', self.current_typed)
+            self.count = self.count + 1
+            return result
 
         def next(self):
             return self.__next__()
@@ -614,7 +613,8 @@ class QMapPrinter:
         realtype = self.val.type.strip_typedefs()
         keytype = realtype.template_argument(0)
         valtype = realtype.template_argument(1)
-        node_type = gdb.lookup_type('QMapData<' + keytype.name + ',' + valtype.name + '>::Node')
+
+        node_type = gdb.lookup_type(f'QMapData<{keytype}, {valtype}>::Node')
 
         return self.Iter(d['header'], node_type.pointer())
 
@@ -622,10 +622,11 @@ class QMapPrinter:
         # if we return an empty list from children, gdb doesn't print anything
         if self.val['d']['size'] == 0:
             return '<empty>'
-        return None
+        return '%s with %s' % (f'{self.val.type.strip_typedefs()}',
+                               num_elements(self.val["d"]["size"]))
 
     def display_hint(self):
-        return 'map'
+        return None # HACK: is not map
 
 class QSetPrinter:
     """Print a Qt5 QSet"""
