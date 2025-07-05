@@ -1,54 +1,42 @@
-#############################################################################
-##
-## Copyright (C) 2014 Alex Merry <alex.merry@kde.org>
-## Contact: http://www.qt-project.org/legal
-##
-## This file is part of the GDB pretty printers for the Qt Toolkit.
-##
-## $QT_BEGIN_LICENSE:LGPL$
-## Commercial License Usage
-## Licensees holding valid commercial Qt licenses may use this file in
-## accordance with the commercial license agreement provided with the
-## Software or, alternatively, in accordance with the terms contained in
-## a written agreement between you and Digia.  For licensing terms and
-## conditions see http://qt.digia.com/licensing.  For further information
-## use the contact form at http://qt.digia.com/contact-us.
-##
-## GNU Lesser General Public License Usage
-## Alternatively, this file may be used under the terms of the GNU Lesser
-## General Public License version 2.1 as published by the Free Software
-## Foundation and appearing in the file LICENSE.LGPL included in the
-## packaging of this file.  Please review the following information to
-## ensure the GNU Lesser General Public License version 2.1 requirements
-## will be met: http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html.
-##
-## In addition, as a special exception, Digia gives you certain additional
-## rights.  These rights are described in the Digia Qt LGPL Exception
-## version 1.1, included in the file LGPL_EXCEPTION.txt in this package.
-##
-## GNU General Public License Usage
-## Alternatively, this file may be used under the terms of the GNU
-## General Public License version 3.0 as published by the Free Software
-## Foundation and appearing in the file LICENSE.GPL included in the
-## packaging of this file.  Please review the following information to
-## ensure the GNU General Public License version 3.0 requirements will be
-## met: http://www.gnu.org/copyleft/gpl.html.
-##
-##
-## $QT_END_LICENSE$
-##
-#############################################################################
+import gdb
+import os
+import sys
 
-import gdb.printing
-from . import core
+class QtPrintersSetupCommand(gdb.Command):
+    def __init__(self):
+        super(QtPrintersSetupCommand, self).__init__("setup-qt-printers", gdb.COMMAND_USER)
 
-"""Qt5 Pretty Printers for GDB.
+    def invoke(self, arg, from_tty):
+        args = gdb.string_to_argv(arg)
+        if len(args) != 1 or args[0] not in ['5', '6']:
+            print("Usage: setup-qt-printers 5|6")
+            return
+        
+        version = args[0]
+        printers_path = os.path.expanduser(f"~/.config/gdb/qt_printers/qt{version}printers")
+        
+        if not os.path.exists(printers_path):
+            print(f"Error: Printers directory not found at {printers_path}")
+            return
+        
+        # Add printers directory to Python path
+        if printers_path not in sys.path:
+            sys.path.insert(0, printers_path)
+        
+        # Import and register printers
+        try:
+            if version == '5':
+                from .qt5printers import register_qt5_printers
+                register_qt5_printers(None)
+                print("Qt5 printers successfully registered")
+            # elif version == '6':
+                # from .qt6printers import register_qt6_printers
+                # register_qt6_printers(None)
+                # print("Qt6 printers successfully registered")
+        except Exception as e:
+            print(f"Error registering Qt{version} printers: {str(e)}")
 
-The printers are split into submodules, one for each Qt library. Each
-submodule has a "printer" attribute that contains a pretty-printer for
-that library.
-"""
 
-def register_printers(obj):
-    """Registers all known Qt5 pretty-printers."""
-    gdb.printing.register_pretty_printer(obj, core.printer)
+def register_qt_setup_commands():
+    # Register the command
+    QtPrintersSetupCommand()
