@@ -14,6 +14,14 @@ else:
     from helper_py2 import Iterator
     from helper_py2 import unichr
 
+def has_field(val, name):
+    """Check whether @p val (gdb.Value) has a field named @p name"""
+    try:
+        val[name]
+        return True
+    except Exception:
+        return False
+
 class QByteArrayPrinter:
     """Print a Qt6 QByteArray"""
 
@@ -55,7 +63,7 @@ class QByteArrayPrinter:
             return data.string(length = self.size, encoding = 'latin1')
 
     def display_hint(self):
-        return "string"
+        return 'string'
 
 class QCharPrinter:
     """Print a Qt6 QChar"""
@@ -247,6 +255,44 @@ class QStackPrinter(QListPrinter):
             return f'QStack<{self.template_type}> is empty'
         return f'QStack<{self.template_type}> with size = {self.size}'
 
+class QMapPrinter:
+    """Print a Qt6 QMap"""
+
+    def __init__(self, _val : gdb.Value):
+        self.val = _val
+        self.qt6StdMapPrinter = None
+        if has_field(self.val['d']['d'], 'ptr'):
+            ptr = self.val['d']['d']['ptr']
+            self.qt6StdMapPrinter = gdb.default_visualizer(ptr['m'])
+        else:
+            ptr = self.val['d']['d']
+            self.qt6StdMapPrinter = gdb.default_visualizer(ptr['m'])
+
+    def children(self):
+        if self.qt6StdMapPrinter != None:
+            if hasattr(self.qt6StdMapPrinter, 'children'):
+                return self.qt6StdMapPrinter.children()
+            return []
+        else:
+            return []
+
+    def to_string(self):
+        num_children = self.num_children()
+        if num_children is None:
+            return f'QMap<{self.val.type.template_argument(0)}, {self.val.type.template_argument(1)}> with size = ?'
+        return f'QMap<{self.val.type.template_argument(0)}, {self.val.type.template_argument(1)}> with size = {int(num_children)}'
+
+    def num_children(self):
+        if self.qt6StdMapPrinter:
+            if hasattr(self.qt6StdMapPrinter, 'num_children'):
+                return self.qt6StdMapPrinter.num_children()
+
+        return None
+
+    def display_hint(self):
+        return None
+
+
 def build_pretty_printer():
     pp = gdb.printing.RegexpCollectionPrettyPrinter('Qt6Core')
     pp.add_printer('QByteArray', '^QByteArray$', QByteArrayPrinter)
@@ -260,6 +306,7 @@ def build_pretty_printer():
     pp.add_printer('QQueue<>', '^QQueue<.*>$', QQueuePrinter)
     pp.add_printer('QVector<>', '^QVector<.*>$', QVectorPrinter)
     pp.add_printer('QStack<>', '^QStack<.*>$', QStackPrinter)
+    pp.add_printer('QMap<>', '^QMap<.*>$', QMapPrinter)
     return pp
 
 printer = build_pretty_printer()
