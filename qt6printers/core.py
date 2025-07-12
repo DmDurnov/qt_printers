@@ -271,7 +271,7 @@ class QMapPrinter:
     def children(self):
         if self.qt6StdMapPrinter != None:
             if hasattr(self.qt6StdMapPrinter, 'children'):
-                return self.qt6StdMapPrinter.children()
+                return self.qt6StdMapPrinter.children() # type: ignore
             return []
         else:
             return []
@@ -285,13 +285,190 @@ class QMapPrinter:
     def num_children(self):
         if self.qt6StdMapPrinter:
             if hasattr(self.qt6StdMapPrinter, 'num_children'):
-                return self.qt6StdMapPrinter.num_children()
+                return self.qt6StdMapPrinter.num_children() #type: ignore
 
         return None
 
     def display_hint(self):
         return None
 
+class QHashPrinter:
+    """Print a Qt6 QHash"""
+
+    def __init__(self, _val : gdb.Value):
+        self.val = _val
+
+    class QHashIterator(Iterator):
+        """
+        Representation Invariants:
+            - self.currentNode is valid if self.d is not 0
+            - self.chain is valid if self.currentNode is valid and self.isMulti is True
+        """
+        def __init__(self, _val : gdb.Value, _isMultiMap : bool):
+            self.val = _val
+            self.d_ptr = self.val['d']
+            self.bucket = 0
+            self.count = 0
+            self.isMulti = _isMultiMap
+
+            keyType = self.val.type.template_argument(0)
+            valueType = self.val.type.template_argument(1)
+            nodeStruct = 'MultiNode' if self.isMulti else 'Node'
+            self.nodeType = f'QHashPrivate::{nodeStruct}<{keyType}, {valueType}>'
+
+            self.firstNode()
+
+        def __iter__(self):
+            return self
+
+        def span(self):
+            "Python port of iterator::span()"
+            return self.bucket >> 7 # SpanConstants::SpanShift
+
+        def index(self):
+            "Python port of iterator::index()"
+            return self.bucket & 127 # SpanConstants::LocalBucketMask
+
+        def isUnused (self):
+            "Python port of iterator::isUnused()"
+            # return !d->spans[span()].hasNode(index());
+            # where hasNode is return (offsets[i] != SpanConstants::UnusedEntry);
+            return self.d_ptr['spans'][self.span()]['offsets'][self.index()] == 0xff # SpanConstants::UnusedEntry
+
+        def computeCurrentNode (self):
+            "Return the node pointed by the iterator, python port of iterator::node()"
+            # return &d->spans[span()].at(index());
+            span_index = self.span()
+            span = self.d_ptr['spans'][span_index]
+            # where at() is return entries[offsets[i]].node();
+            offset = span['offsets'][self.index()]
+
+            if offset == 0xff: # UnusedEntry, can't happen
+                print("Offset points to an unused entry.")
+                return None
+
+            entry = span['entries'][int(offset)]
+
+            # where node() is return *reinterpret_cast<Node *>(&storage);
+            # where Node is QHashPrivate::(Multi|)Node<Key, T>
+            storage_pointer = entry['storage'].address
+            return storage_pointer.cast(gdb.lookup_type(self.nodeType).pointer())
+
+        def updateCurrentNode (self):
+            "Compute the current node and update the QMultiHash chain"
+            self.currentNode = self.computeCurrentNode()
+            if self.isMulti:
+                # Python port of any of the following two lines in QMultiHash::iterator:
+                # e = &it.node()->value;
+                # e = i.atEnd() ? nullptr : &i.node()->value;
+                # Note that self.currentNode must be valid (not at end) here.
+                assert(self.currentNode)
+                self.chain = self.currentNode['value']
+
+        def firstNode (self):
+            "Go the first node, See Data::begin()."
+            self.bucket = 0
+            if self.isUnused():
+                self.nextNode() # calls self.updateCurrentNode() if not empty
+            else:
+                self.updateCurrentNode()
+
+        def nextNode (self):
+            "Go to the next node, see iterator::operator++()."
+            numBuckets = self.d_ptr['numBuckets']
+            while True:
+                self.bucket += 1
+                if self.bucket == numBuckets:
+                    self.d_ptr = gdb.Value(0)
+                    self.bucket = 0
+                    return
+                if not self.isUnused():
+                    self.updateCurrentNode()
+                    return
+
+        def __next__(self):
+            "GDB iteration, first call returns key, second value and then jumps to the next chain or hash node."
+            if not self.d_ptr:
+                raise StopIteration
+
+            index = self.count
+            self.count = self.count + 1
+            item = None
+            if not self.isMulti:
+                item = self.currentNode
+                self.nextNode()
+            else:
+                item = self.chain
+                self.chain = self.chain['next']
+                if not self.chain:
+                    self.nextNode()
+
+            assert(item)
+            result = (f'[{index}]', item.dereference())
+            return result
+
+    def children(self):
+        d = self.val['d']
+        if not d:
+            return []
+        return self.QHashIterator(self.val, False)
+
+    def num_children(self):
+        size = 0
+        if has_field(self.val, 'm_size'):
+            size = self.val['m_size']
+        else:
+            d = self.val['d']
+            size = d['size'] if d else 0
+        return int(size) * 2
+
+    def to_string(self):
+        return f'QHash<{self.val.type.template_argument(0)}, {self.val.type.template_argument(1)}> with size = {self.num_children() // 2}'
+
+    def display_hint(self):
+        return None
+
+class QSetPrinter:
+    """Print a Qt6 QSet"""
+
+    def __init__(self, _val : gdb.Value):
+        self.val = _val
+
+    class QSetIterator(Iterator):
+        def __init__(self, _hashIterator):
+            self.hash_iterator = _hashIterator
+            self.index = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if not self.hash_iterator.d_ptr:
+                raise StopIteration
+
+            item = self.hash_iterator.currentNode['key']
+            self.hash_iterator.nextNode()
+
+            index = self.index
+            self.index = self.index + 1
+            return (f'[{index}]', item)
+
+    def children(self):
+        qhash = self.val['q_hash']
+        d = qhash['d']
+        if not d:
+            return []
+
+        hashPrinter = QHashPrinter(qhash)
+        hashIterator = hashPrinter.children()
+        return self.QSetIterator(hashIterator)
+
+    def num_children(self):
+        d = self.val['q_hash']['d']
+        return d['size'] if d else 0
+
+    def to_string(self):
+        return f'QSet<{self.val.type.template_argument(0)}> with size = {self.num_children()}'
 
 def build_pretty_printer():
     pp = gdb.printing.RegexpCollectionPrettyPrinter('Qt6Core')
@@ -307,6 +484,8 @@ def build_pretty_printer():
     pp.add_printer('QVector<>', '^QVector<.*>$', QVectorPrinter)
     pp.add_printer('QStack<>', '^QStack<.*>$', QStackPrinter)
     pp.add_printer('QMap<>', '^QMap<.*>$', QMapPrinter)
+    pp.add_printer('QHash<>', '^QHash<.*>$', QHashPrinter)
+    pp.add_printer('QSet<>', '^QSet<.*>$', QSetPrinter)
     return pp
 
 printer = build_pretty_printer()
