@@ -201,9 +201,51 @@ class QListPrinter:
 
     def to_string(self):
         if self.size == 0:
-            return f'QList<{self.template_type}> (empty)'
-        return f'QList<{self.template_type}> (size = {self.size})'
+            return f'QList<{self.template_type}> is empty'
+        return f'QList<{self.template_type}> with size = {self.size}'
 
+class QStringListPrinter(QListPrinter):
+    """Print a Qt6 QStringList"""
+    def __init__(self, _val : gdb.Value):
+        super().__init__(_val)
+
+    def to_string(self):
+        if self.size == 0:
+            return 'QStringList is empty'
+        return f'QStringList with size = {self.size}'
+
+class QQueuePrinter(QListPrinter):
+    """Print a Qt6 QQueue"""
+    def __init__(self, _val : gdb.Value):
+        super().__init__(_val)
+
+    def to_string(self):
+        if self.size == 0:
+            return f'QQueue<{self.template_type}> is empty'
+        return f'QQueue<{self.template_type}> with size = {self.size}'
+
+class QVectorPrinter(QListPrinter):
+    """Print a Qt6 QVector"""
+    """QVector is alias for QList"""
+    
+    def __init__(self, _val : gdb.Value):
+        super().__init__(_val)
+
+    def to_string(self):
+        if self.size == 0:
+            return f'QVector<{self.template_type}> is empty'
+        return f'QVector<{self.template_type}> with size = {self.size}'
+
+class QStackPrinter(QListPrinter):
+    """Print a Qt6 QStack"""
+    
+    def __init__(self, _val : gdb.Value):
+        super().__init__(_val)
+
+    def to_string(self):
+        if self.size == 0:
+            return f'QStack<{self.template_type}> is empty'
+        return f'QStack<{self.template_type}> with size = {self.size}'
 
 def build_pretty_printer():
     pp = gdb.printing.RegexpCollectionPrettyPrinter('Qt6Core')
@@ -214,6 +256,10 @@ def build_pretty_printer():
     pp.add_printer('QStringView', '^QStringView$', QStringViewPrinter)
     pp.add_printer('QUtf8StringView', '^QUtf8StringView$', QUtf8StringViewPrinter)
     pp.add_printer('QList<>', '^QList<.*>$', QListPrinter)
+    pp.add_printer('QStringList<>', '^QStringList<.*>$', QStringListPrinter)
+    pp.add_printer('QQueue<>', '^QQueue<.*>$', QQueuePrinter)
+    pp.add_printer('QVector<>', '^QVector<.*>$', QVectorPrinter)
+    pp.add_printer('QStack<>', '^QStack<.*>$', QStackPrinter)
     return pp
 
 printer = build_pretty_printer()
