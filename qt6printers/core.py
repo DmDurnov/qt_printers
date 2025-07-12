@@ -166,6 +166,45 @@ class QUtf8StringViewPrinter:
     def display_hint(self):
         return 'string'
 
+class QListPrinter:
+    """Print a Qt6 QList"""
+    def __init__(self, _val : gdb.Value):
+        self.val = _val
+        self.d_ptr = self.val['d']
+        self.size = int(self.d_ptr['size'])
+        self.template_type = self.val.type.template_argument(0)
+
+    class QListIterator(Iterator):
+        def __init__(self, _nodetype : gdb.Type, _d_ptr : gdb.Value):
+            self.nodetype = _nodetype
+            self.d_ptr = _d_ptr
+            self.index = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            size = int(self.d_ptr['size'])
+
+            if self.index >= size:
+                raise StopIteration
+            index = self.index
+            value = self.d_ptr['ptr'] + index
+            self.index = self.index + 1
+            return ((f'[{index}]'), value.cast(self.nodetype.pointer()).dereference())
+
+    def children(self):
+        return self.QListIterator(self.template_type, self.d_ptr)
+
+    def num_children(self):
+        return self.size
+
+    def to_string(self):
+        if self.size == 0:
+            return f'QList<{self.template_type}> (empty)'
+        return f'QList<{self.template_type}> (size = {self.size})'
+
+
 def build_pretty_printer():
     pp = gdb.printing.RegexpCollectionPrettyPrinter('Qt6Core')
     pp.add_printer('QByteArray', '^QByteArray$', QByteArrayPrinter)
@@ -174,6 +213,7 @@ def build_pretty_printer():
     pp.add_printer('QString', '^QString$', QStringPrinter)
     pp.add_printer('QStringView', '^QStringView$', QStringViewPrinter)
     pp.add_printer('QUtf8StringView', '^QUtf8StringView$', QUtf8StringViewPrinter)
+    pp.add_printer('QList<>', '^QList<.*>$', QListPrinter)
     return pp
 
 printer = build_pretty_printer()
