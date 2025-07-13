@@ -1,6 +1,8 @@
 import gdb.printing
 import itertools
 import sys
+from enum import Enum
+from datetime import datetime
 
 """Qt6Core pretty printer for GDB."""
 
@@ -292,6 +294,18 @@ class QMapPrinter:
     def display_hint(self):
         return None
 
+class QMultiMapPrinter(QMapPrinter):
+    """Print a Qt6 QMultiMap"""
+
+    def __init__(self, _val : gdb.Value):
+        super().__init__(_val)
+
+    def to_string(self):
+        num_children = self.num_children()
+        if num_children is None:
+            return f'QMultiMap<{self.val.type.template_argument(0)}, {self.val.type.template_argument(1)}> with size = ?'
+        return f'QMultiMap<{self.val.type.template_argument(0)}, {self.val.type.template_argument(1)}> with size = {int(num_children)}'
+
 class QHashPrinter:
     """Print a Qt6 QHash"""
 
@@ -420,13 +434,27 @@ class QHashPrinter:
         else:
             d = self.val['d']
             size = d['size'] if d else 0
-        return int(size) * 2
+        return int(size)
 
     def to_string(self):
-        return f'QHash<{self.val.type.template_argument(0)}, {self.val.type.template_argument(1)}> with size = {self.num_children() // 2}'
+        return f'QHash<{self.val.type.template_argument(0)}, {self.val.type.template_argument(1)}> with size = {self.num_children()}'
 
     def display_hint(self):
         return None
+
+class QMultiHash(QHashPrinter):
+    """Print a Qt6 QMultiHash"""
+    def __init__(self, _val : gdb.Value):
+        super().__init__(_val)
+
+    def children(self):
+        d = self.val['d']
+        if not d:
+            return []
+        return self.QHashIterator(self.val, True)
+
+    def to_string(self):
+        return f'QMultiHash<{self.val.type.template_argument(0)}, {self.val.type.template_argument(1)}> with size = {self.num_children()}'
 
 class QSetPrinter:
     """Print a Qt6 QSet"""
@@ -470,22 +498,329 @@ class QSetPrinter:
     def to_string(self):
         return f'QSet<{self.val.type.template_argument(0)}> with size = {self.num_children()}'
 
+class QVariantPrinter:
+    """Print a Qt6 QVariant"""
+
+    def __init__(self, _val : gdb.Value):
+        self.val = _val
+        self.d_ptr = self.val['d']
+        self.is_null = self.d_ptr['is_null']
+
+    def to_string(self):
+        if self.is_null:
+            return 'QVariant(empty)'
+
+        data_type = self.d_ptr['packedType'] << 2
+        metatype_interface = data_type.cast(gdb.lookup_type('QtPrivate::QMetaTypeInterface').pointer())
+        type_str = ''
+        try:
+            typeAsCharPointer = metatype_interface['name']
+            if typeAsCharPointer:
+                type_str = typeAsCharPointer.string(encoding = 'utf-8')
+        except Exception:
+            pass
+
+        data = self.d_ptr['data']
+        is_shared = self.d_ptr['is_shared']
+        value_str = None
+        if is_shared:
+            private_shared = data['shared'].dereference()
+            private_shared_hex = hex(private_shared['data'])
+            value_str = f'PrivateShared({private_shared_hex})'
+        else:
+            if type_str.endswith('*'):
+                value_ptr = data['data'].reinterpret_cast(gdb.lookup_type('void').pointer().pointer())
+                value_str = str(value_ptr.dereference())
+            else:
+                type_obj = None
+                try:
+                    type_obj = gdb.lookup_type(type_str)
+                except Exception:
+                    value_str = str(data['data'])
+
+                if type_obj:
+                    value_ptr = data['data'].reinterpret_cast(type_obj.pointer())
+                    value_str = str(value_ptr.dereference())
+
+        return f'QVariant(type = "{type_str}", value = {value_str})'
+
+class QDatePrinter:
+    """Print a Qt6 QDate"""
+
+    def __init__(self, _val : gdb.Value):
+        self.val = _val
+
+    def to_string(self):
+        julianDay = self.val['jd']
+
+        if julianDay == 0:
+            return "invalid QDate"
+
+        # Copied from Qt sources
+        if julianDay >= 2299161:
+            # Gregorian calendar starting from October 15, 1582
+            # This algorithm is from Henry F. Fliegel and Thomas C. Van Flandern
+            ell = julianDay + 68569;
+            n = (4 * ell) / 146097;
+            ell = ell - (146097 * n + 3) / 4;
+            i = (4000 * (ell + 1)) / 1461001;
+            ell = ell - (1461 * i) / 4 + 31;
+            j = (80 * ell) / 2447;
+            d = ell - (2447 * j) / 80;
+            ell = j / 11;
+            m = j + 2 - (12 * ell);
+            y = 100 * (n - 49) + i + ell;
+        else:
+            # Julian calendar until October 4, 1582
+            # Algorithm from Frequently Asked Questions about Calendars by Claus Toendering
+            julianDay += 32082;
+            dd = (4 * julianDay + 3) / 1461;
+            ee = julianDay - (1461 * dd) / 4;
+            mm = ((5 * ee) + 2) / 153;
+            d = ee - (153 * mm + 2) / 5 + 1;
+            m = mm + 3 - 12 * (mm / 10);
+            y = int(dd - 4800 + (mm / 10));
+            if y <= 0:
+                y = y - 1;
+        return "%d-%02d-%02d" % (y, m, d)
+
+class QTimePrinter:
+    """Print a Qt6 QTime"""
+
+    def __init__(self, _val : gdb.Value):
+        self.val = _val
+
+    def to_string(self):
+        ds = self.val['mds']
+
+        if ds == -1:
+            return "invalid QTime"
+
+        MSECS_PER_HOUR = 3600000
+        SECS_PER_MIN = 60
+        MSECS_PER_MIN = 60000
+
+        hour = ds / MSECS_PER_HOUR
+        minute = (ds % MSECS_PER_HOUR) / MSECS_PER_MIN
+        second = (ds / 1000)%SECS_PER_MIN
+        msec = ds % 1000
+        return "%02d:%02d:%02d.%03d" % (hour, minute, second, msec)
+
+
+class TimeSpec(Enum): # enum Qt::TimeSpec
+    LocalTime = 0
+    UTC = 1
+    OffsetFromUTC = 2
+    TimeZone = 3
+
+def timeZoneId(spec, offsetFromUtc):
+    if spec == TimeSpec.LocalTime.value:
+        return 'Local'
+    if spec == TimeSpec.UTC.value:
+        return 'UTC'
+    if spec == TimeSpec.OffsetFromUTC.value:
+        offsetFromUtc = int(offsetFromUtc)
+        sign = '-' if offsetFromUtc < 0 else '+'
+        hours = abs(offsetFromUtc) // 3600
+        minutes = (abs(offsetFromUtc) % 3600) // 60
+        return f"UTC{sign}{hours:02}:{minutes:02}"
+    # ShortData(Qt::TimeZone) has mode == 0, in which case Data is *not* short (and Data::d is nullptr).
+    # But QDateTimePrinter.to_string() may perhaps pass TimeSpec.TimeZone as the spec in an invalid case.
+    if spec == TimeSpec.TimeZone.value:
+        return QTimeZonePrinter.INVALID
+    return f'<error: unhandled time spec {spec}>'
+
+class QTimeZonePrinter:
+    """Print a Qt6 QTimeZone"""
+    INVALID = "<invalid>"
+
+    def __init__(self, _val : gdb.Value):
+        self.val = _val
+
+    def to_string(self):
+        d = self.val['d'] # QTimeZone::Data
+        isShort = d.cast(gdb.lookup_type('long long')) & 3 # QTimeZone::Data::isShort (Qt6-only)
+        if isShort:
+            mode = d['s']['mode']
+            spec = (mode + 3) & 3 # QTimeZone::ShortData::spec()
+            offsetFromUtc = d['s']['offset']
+            return timeZoneId(spec, offsetFromUtc)
+        else:
+            # QTimeZonePrivate contains:
+            # - QSharedData (int) (plus 4 bytes of padding in case of a 64-bit architecture)
+            # - vtable for QTimeZonePrivate
+            # - QByteArray m_id
+            qByteArrayPointerType = gdb.lookup_type('QByteArray').pointer()
+            address = d.cast(qByteArrayPointerType.pointer()) # address of QTimeZonePrivate as QByteArray**
+            if address == 0:
+                # QTimeZone::isValid(), if not short, returns d.d && d->isValid()
+                return QTimeZonePrinter.INVALID
+            address += 2 # skip the first two hidden, pointer-sized data members
+
+            tzId = QByteArrayPrinter(address.cast(qByteArrayPointerType).dereference()).to_string()
+            # QTimeZonePrivate::isValid() returns !m_id.isEmpty()
+            return tzId if tzId else QTimeZonePrinter.INVALID
+
+def extractTimeSpec(_status):
+    return (_status & QDateTimePrinter.TimeSpecMask) >> QDateTimePrinter.TimeSpecShift
+
+class QDateTimePrinter:
+    """Print a Qt6 QDateTime"""
+
+    TimeSpecShift = 4
+    TimeSpecMask  = 0x30
+
+    def __init__(self, _val : gdb.Value):
+        self.val = _val
+
+    def to_string(self):
+        d = self.val['d'] # QDateTime::Data
+        isShort = d.cast(gdb.lookup_type('long long')) & 1 # QDateTime::Data::isShort
+        if isShort:
+            msecs = d['data']['msecs']
+            status = d['data']['status']
+            offsetFromUtc = 0
+
+            spec = extractTimeSpec(status)
+
+            timeZone = timeZoneId(spec, offsetFromUtc)
+        else:
+            # QDateTimePrivate contains:
+            # - QSharedData (int)
+            # - (int) StatusFlags m_status
+            # - qint64 m_msecs
+            # - int m_offsetFromUtc (plus 4 bytes of padding in case of a 64-bit architecture)
+            # - QTimeZone m_timeZone
+            intType = gdb.lookup_type('int')
+            intPointerType = intType.pointer()
+            address = d.cast(intPointerType) # address of QDateTimePrivate as int*
+            address += 1 # skip QSharedData
+            status = address.dereference()
+            address += 1 # skip m_status
+
+            int64Type = gdb.lookup_type('long long')
+            msecs = address.cast(int64Type.pointer()).dereference()
+            address += int64Type.sizeof // intType.sizeof # skip m_msecs
+            offsetFromUtc = address.dereference()
+
+            spec = extractTimeSpec(status)
+
+            if spec == TimeSpec.TimeZone.value:
+                address += intPointerType.sizeof // intType.sizeof
+                # skip m_offsetFromUtc and possible padding assuming that QTimeZone is pointer-aligned
+                # print m_timeZone
+                timeZone = QTimeZonePrinter(address.cast(gdb.lookup_type('QTimeZone').pointer()).dereference()).to_string()
+            else:
+                timeZone = timeZoneId(spec, offsetFromUtc)
+
+        return datetime.utcfromtimestamp(int(msecs) / 1000.0).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3] + ' ' + timeZone
+
+
+class QPersistentModelIndexPrinter:
+    """Print a Qt6 QPersistentModelIndex"""
+
+    def __init__(self, _val : gdb.Value):
+        self.val = _val
+
+    def to_string(self):
+        modelIndex = gdb.parse_and_eval(f"reinterpret_cast<const QPersistentModelIndex*>({self.val.address})->operator QModelIndex()")
+        return str(modelIndex)
+
+class QUrlPrinter:
+    """Print a Qt6 QUrl"""
+
+    def __init__(self, _val : gdb.Value):
+        self.val = _val
+
+    def to_string(self):
+        try:
+            int_type = gdb.lookup_type('int')
+            string_type = gdb.lookup_type('QString')
+            string_pointer = string_type.pointer()
+
+            addr = self.val['d'].cast(gdb.lookup_type('char').pointer())
+            if not addr:
+                return '<invalid>'
+
+            # skip QAtomicInt ref
+            addr += int_type.sizeof
+            # handle int port
+            port = addr.cast(int_type.pointer()).dereference()
+            addr += int_type.sizeof
+            # handle QString scheme
+            scheme = QStringPrinter(addr.cast(string_pointer).dereference()).to_string()
+            addr += string_type.sizeof
+            # handle QString username
+            username = QStringPrinter(addr.cast(string_pointer).dereference()).to_string()
+            addr += string_type.sizeof
+            # skip QString password
+            addr += string_type.sizeof
+            # handle QString host
+            host = QStringPrinter(addr.cast(string_pointer).dereference()).to_string()
+            addr += string_type.sizeof
+            # handle QString path
+            path = QStringPrinter(addr.cast(string_pointer).dereference()).to_string()
+            addr += string_type.sizeof
+            # handle QString query
+            query = QStringPrinter(addr.cast(string_pointer).dereference()).to_string()
+            addr += string_type.sizeof
+            # handle QString fragment
+            fragment = QStringPrinter(addr.cast(string_pointer).dereference()).to_string()
+
+            url = ''
+            if len(scheme) > 0:
+                # TODO: always adding // is apparently not compliant in all cases
+                url += scheme + '://'
+            if len(host) > 0:
+                if len(username) > 0:
+                    url += username + '@'
+                url += host
+                if port != -1:
+                    url += ':' + str(port)
+            url += path
+            if len(query) > 0:
+                url += '?' + query
+            if len(fragment) > 0:
+                url += '#' + fragment
+
+            return url
+        except:
+            pass
+        # then try to print directly, but that might lead to issues (see http://sourceware-org.1504.n7.nabble.com/help-Calling-malloc-from-a-Python-pretty-printer-td284031.html)
+        try:
+            res = gdb.parse_and_eval(f'reinterpret_cast<const QUrl*>({self.val.address})->toString((QUrl::FormattingOptions)QUrl::PrettyDecoded)')
+            return str(res)
+        except:
+            pass
+
+        return '<uninitialized>'
+
+
 def build_pretty_printer():
     pp = gdb.printing.RegexpCollectionPrettyPrinter('Qt6Core')
     pp.add_printer('QByteArray', '^QByteArray$', QByteArrayPrinter)
     pp.add_printer('QChar', '^QChar$', QCharPrinter)
+    pp.add_printer('QDate', '^QDate$', QDatePrinter)
+    pp.add_printer('QDateTime', '^QDateTime$', QDateTimePrinter)
+    pp.add_printer('QHash', '^QHash<.*>$', QHashPrinter)
     pp.add_printer('QLatin1String', '^QLatin1String$', QLatin1StringPrinter)
+    pp.add_printer('QList', '^QList<.*>$', QListPrinter)
+    pp.add_printer('QMap', '^QMap<.*>$', QMapPrinter)
+    pp.add_printer('QMultiHash', '^QMultiHash<.*>$', QHashPrinter)
+    pp.add_printer('QMultiMap', '^QMultiMap<.*>$', QMultiMapPrinter)
+    pp.add_printer('QPersistentModelIndex', '^QPersistentModelIndex$', QPersistentModelIndexPrinter)
+    pp.add_printer('QQueue', '^QQueue<.*>$', QQueuePrinter)
+    pp.add_printer('QSet', '^QSet<.*>$', QSetPrinter)
+    pp.add_printer('QStack', '^QStack<.*>$', QStackPrinter)
     pp.add_printer('QString', '^QString$', QStringPrinter)
+    pp.add_printer('QStringList', '^QStringList<.*>$', QStringListPrinter)
     pp.add_printer('QStringView', '^QStringView$', QStringViewPrinter)
+    pp.add_printer('QTime', '^QTime$', QTimePrinter)
+    pp.add_printer('QTimeZone', '^QTimeZone$', QTimeZonePrinter)
+    pp.add_printer('QUrl', '^QUrl$', QUrlPrinter)
     pp.add_printer('QUtf8StringView', '^QUtf8StringView$', QUtf8StringViewPrinter)
-    pp.add_printer('QList<>', '^QList<.*>$', QListPrinter)
-    pp.add_printer('QStringList<>', '^QStringList<.*>$', QStringListPrinter)
-    pp.add_printer('QQueue<>', '^QQueue<.*>$', QQueuePrinter)
-    pp.add_printer('QVector<>', '^QVector<.*>$', QVectorPrinter)
-    pp.add_printer('QStack<>', '^QStack<.*>$', QStackPrinter)
-    pp.add_printer('QMap<>', '^QMap<.*>$', QMapPrinter)
-    pp.add_printer('QHash<>', '^QHash<.*>$', QHashPrinter)
-    pp.add_printer('QSet<>', '^QSet<.*>$', QSetPrinter)
+    pp.add_printer('QVariant', '^QVariant$', QVariantPrinter)
+    pp.add_printer('QVector', '^QVector<.*>$', QVectorPrinter)
     return pp
 
 printer = build_pretty_printer()
